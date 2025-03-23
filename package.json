@@ -50,7 +50,8 @@
     "react-native-webview": "13.12.5",
     "tailwindcss": "3.4.17",
     "expo-camera": "~16.0.18",
-    "@shopify/react-native-skia": "1.5.0"
+    "@shopify/react-native-skia": "1.5.0",
+    "expo-checkbox": "~4.0.1"
   },
   "devDependencies": {
     "@types/jest": "^29.5.12",
