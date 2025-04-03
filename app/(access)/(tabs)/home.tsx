@@ -1,15 +1,11 @@
 import { Image, StyleSheet, Platform, View, Text, Pressable, TouchableOpacity } from 'react-native';
-
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import { SolidButton, SolidButtonArrow } from '@/components/CustomButtons';
+import {SolidButtonArrow } from '@/components/CustomButtons';
 import { Link, router } from 'expo-router';
 import {MyTopBar} from '@/components/MyTopBar';
 import { ScrollView } from 'react-native-gesture-handler';
-import Ionicons from '@expo/vector-icons/Ionicons';
 import {Dialog} from 'react-native-ui-lib'
 import { useState } from 'react';
 
@@ -130,7 +126,7 @@ export default function HomeScreen() {
       
       <View className="flex-row gap-4 justify-center mt-4">
 
-        <Link href={`/single-scan/${2}` as any} asChild>
+        <Link href={`/single-scan/${2}` } asChild>
           <TouchableOpacity 
             onPress={() => {}}
             className="bg-neutral-700 py-3 px-6 rounded-xl flex-row gap-2 items-center"
@@ -150,7 +146,7 @@ export default function HomeScreen() {
           <Text className="text-white text-sm" style={{fontFamily: 'Poppins_500Medium'}}>Delete</Text>
         </TouchableOpacity>
       </View>
-    </Dialog>
+      </Dialog>
     </SafeAreaView>
   );
 }
