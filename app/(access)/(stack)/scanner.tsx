@@ -30,6 +30,7 @@ const Scanner = () => {
   const [connectedDevice, setConnectedDevice] = useState<Device | null>(null)
   const bleManagerRef = useRef<BleManager | null>(null)
   const [isInitializing, setIsInitializing] = useState(true)
+  const [isScanning, setIsScanning] = useState(false)
 
   // Request permissions for both Android and iOS
   const requestPermissions = async () => {
@@ -122,8 +123,23 @@ const Scanner = () => {
 
         // Check if Bluetooth is powered on
         const state = await bleManagerRef.current.state()
+        console.log("Bluetooth state:", state)
+
         if (state !== "PoweredOn") {
-          Alert.alert("Bluetooth is not enabled ⚠️⚠️", "Please enable Bluetooth to connect to your device")
+          Alert.alert("Bluetooth is not enabled", "Please enable Bluetooth to connect to your device", [
+            {
+              text: "OK",
+              onPress: () => {
+                // On Android, we can try to enable Bluetooth programmatically
+                if (Platform.OS === "android") {
+                  bleManagerRef.current
+                    ?.enable()
+                    .then(() => console.log("Bluetooth enabled successfully"))
+                    .catch((error) => console.error("Failed to enable Bluetooth:", error))
+                }
+              },
+            },
+          ])
         }
 
         if (mounted) {
@@ -139,10 +155,7 @@ const Scanner = () => {
       }
     }
 
-    // Delay initialization slightly to ensure component is fully mounted
-    setTimeout(() => {
-      initializeBLE()
-    }, 100)
+    initializeBLE()
 
     // Clean up function
     return () => {
@@ -169,6 +182,12 @@ const Scanner = () => {
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (appState.current.match(/inactive|background/) && nextAppState === "active") {
         qrLock.current = false
+
+        // Re-initialize BLE manager if coming back to foreground
+        if (bleManagerRef.current === null) {
+          bleManagerRef.current = new BleManager()
+          console.log("BLE Manager re-created after app state change")
+        }
       }
       appState.current = nextAppState
     })
@@ -200,21 +219,31 @@ const Scanner = () => {
     }
 
     try {
+      // Stop any existing scan first
+      if (isScanning && bleManagerRef.current) {
+        bleManagerRef.current.stopDeviceScan()
+        setIsScanning(false)
+      }
+
       setDeviceStatus(`Searching for device: ${macAddress}...`)
+      setIsScanning(true)
 
       // Start scanning for devices
-      bleManagerRef.current.startDeviceScan(null, null, (error, device) => {
+      bleManagerRef.current.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
         if (error) {
           console.error("Scan error:", error)
           setDeviceStatus(`Error scanning: ${error.message}`)
+          setIsScanning(false)
           if (bleManagerRef.current) {
             bleManagerRef.current.stopDeviceScan()
           }
           return
         }
 
+        console.log("Found device:", device?.id, device?.name)
+
         // For Android, we can directly match by MAC address
-        if (Platform.OS === "android" && device?.id === macAddress) {
+        if (Platform.OS === "android" && device?.id.toUpperCase() === macAddress.toUpperCase()) {
           handleDeviceFound(device)
         }
         // For iOS, we need to match by other characteristics as iOS doesn't expose MAC addresses
@@ -227,19 +256,21 @@ const Scanner = () => {
         }
       })
 
-      // Stop scanning after 10 seconds if no device found
+      // Stop scanning after 30 seconds if no device found
       setTimeout(() => {
-        if (!connectedDevice && bleManagerRef.current) {
+        if (!connectedDevice && bleManagerRef.current && isScanning) {
           try {
             bleManagerRef.current.stopDeviceScan()
-            setDeviceStatus("Device not found after timeout")
+            setIsScanning(false)
+            setDeviceStatus("Device not found after timeout. Try scanning again.")
           } catch (error) {
             console.error("Error stopping scan:", error)
           }
         }
-      }, 10000)
+      }, 30000)
     } catch (error) {
       console.error("BLE connection error:", error)
+      setIsScanning(false)
       setDeviceStatus(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -252,11 +283,12 @@ const Scanner = () => {
 
     try {
       bleManagerRef.current.stopDeviceScan()
+      setIsScanning(false)
       setDeviceStatus(`Device found: ${device.name || device.id}. Connecting...`)
 
       // Connect to the device
       bleManagerRef.current
-        .connectToDevice(device.id)
+        .connectToDevice(device.id, { autoConnect: true, timeout: 10000 })
         .then((connectedDevice) => {
           setConnectedDevice(connectedDevice)
           setDeviceStatus(`Connected to: ${connectedDevice.name || connectedDevice.id}`)
@@ -265,7 +297,25 @@ const Scanner = () => {
         .then((device) => {
           console.log("Device connected and ready:", device.id)
           // Here you can start interacting with the device
-          // device.readCharacteristicForService(serviceUUID, characteristicUUID)
+          // List all services and characteristics to help debug
+          return device.services().then((services) => {
+            services.forEach((service) => {
+              console.log("Service:", service.uuid)
+              service.characteristics().then((characteristics) => {
+                characteristics.forEach((characteristic) => {
+                  console.log(
+                    "  Characteristic:",
+                    characteristic.uuid,
+                    "Properties:",
+                    characteristic.isReadable ? "Read " : "",
+                    characteristic.isWritableWithResponse ? "Write " : "",
+                    characteristic.isWritableWithoutResponse ? "WriteWithoutResponse " : "",
+                    characteristic.isNotifiable ? "Notify " : "",
+                  )
+                })
+              })
+            })
+          })
         })
         .catch((error) => {
           console.error("Connection error:", error)
@@ -277,17 +327,44 @@ const Scanner = () => {
     }
   }
 
+  // Add this function before the connectToDevice function:
+  const normalizeMacAddress = (macAddress: string): string => {
+    const cleanMac = macAddress.replace(/[^0-9A-Fa-f]/g, "")
+    // Format as XX:XX:XX:XX:XX:XX
+    if (cleanMac.length === 12) {
+      return cleanMac.match(/.{1,2}/g)?.join(":") || macAddress
+    }
+    return macAddress
+  }
+
   // Handle QR code scanning
   const handleBarcodeScanned = ({ data }: { data: string }) => {
     if (data && !qrLock.current) {
       qrLock.current = true
+      console.log("QR Code scanned, raw data:", data)
       console.log("QR Code scanned, MAC address:", data)
+      // const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+      const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]?){5}([0-9A-Fa-f]{2})$/
+      if (!macAddressRegex.test(data)) {
+        setDeviceStatus("Invalid MAC address format in QR code")
+        setTimeout(() => {
+          qrLock.current = false
+        }, 3000)
+        return
+      }
 
-      // Set the scanned MAC address
       setScannedAddress(data)
+      connectToDevice(normalizeMacAddress(data))
+    }
+  }
 
-      // Connect to the Bluetooth device
-      connectToDevice(data)
+  // Manual reconnect function
+  const handleReconnect = () => {
+    if (scannedAddress) {
+      qrLock.current = false
+      connectToDevice(scannedAddress)
+    } else {
+      setDeviceStatus("No device address available. Please scan a QR code first.")
     }
   }
 
@@ -314,9 +391,26 @@ const Scanner = () => {
             <Text className="text-white text-center font-bold text-lg">Initializing BLE Manager...</Text>
           </View>
         ) : (
-          <Text className="text-white text-center font-bold text-lg">{deviceStatus}</Text>
+          <>
+            <Text className="text-white text-center font-bold text-lg">{deviceStatus}</Text>
+            {isScanning && (
+              <View className="flex-row items-center justify-center space-x-2 mt-2">
+                <ActivityIndicator size="small" color="#ffffff" />
+                <Text className="text-white text-center">Scanning...</Text>
+              </View>
+            )}
+          </>
         )}
         {scannedAddress && <Text className="text-white text-center mt-2">MAC: {scannedAddress}</Text>}
+
+        {/* Reconnect button */}
+        {scannedAddress && !isInitializing && !isScanning && !connectedDevice && (
+          <View className="mt-4">
+            <Text className="text-white text-center bg-blue-600 p-2 rounded-lg" onPress={handleReconnect}>
+              Retry Connection
+            </Text>
+          </View>
+        )}
       </Animated.View>
 
       <Animated.View
