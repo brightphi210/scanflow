@@ -18,7 +18,7 @@ export default function ScanScreen() {
   const isPermissionGranted = Boolean(permission?.granted)
   return (
     <SafeAreaView className='pt-7  flex-1 bg-[#010101]'>
-      <MyTopBar text='Hello' onPress={()=>router.push('/setting')}/>
+      <MyTopBar text='Scan Smoothly' onPress={()=>router.push('/setting')}/>
       <View className='flex-1 justify-center items-center w-full '>
         <Animated.View className="" entering={FadeInDown.duration(300).springify()}>
           <Image

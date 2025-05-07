@@ -2,33 +2,99 @@ import { Image, StyleSheet, Platform, View, Text, Pressable, TouchableOpacity } 
 import { SafeAreaView } from 'react-native-safe-area-context';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import Animated, { FadeInDown } from 'react-native-reanimated';
-import {SolidButtonArrow } from '@/components/CustomButtons';
+import { SolidButtonArrow } from '@/components/CustomButtons';
 import { Link, router } from 'expo-router';
-import {MyTopBar} from '@/components/MyTopBar';
+import { MyTopBar } from '@/components/MyTopBar';
 import { ScrollView } from 'react-native-gesture-handler';
-import {Dialog} from 'react-native-ui-lib'
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { getAllReceipts, deleteReceipt, initDatabase } from '@/components/utils/database';
+import { Dialog } from 'react-native-ui-lib';
+
+// Receipt interface definition
+interface Receipt {
+  id: number;
+  employee: string;
+  pos: string;
+  total: string;
+  paymentMethod: string;
+  paymentAmount: string;
+  dateTime: string;
+  receiptNumber: string;
+}
 
 export default function HomeScreen() {
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
+  const [selectedReceiptId, setSelectedReceiptId] = useState<number | null>(null);
 
-  const [isOpen, setIsOpen] = useState(false)
+  useEffect(() => {
+    // Initialize database and load receipts
+    const setupDatabase = async () => {
+      try {
+        await initDatabase();
+        await loadReceipts();
+      } catch (error) {
+        console.error('Error setting up database:', error);
+      }
+    };
 
-  const openDialog = () => {
-    setIsOpen(true)
-  }
+    setupDatabase();
+  }, []);
 
-  const closeDialog = () => {
-    setIsOpen(false)
-  }
+  const loadReceipts = async () => {
+    try {
+      setLoading(true);
+      const allReceipts = await getAllReceipts();
+      // Only show the most recent 3 receipts on home screen
+      const recentReceipts = allReceipts.slice(0, 3) as Receipt[];
+      setReceipts(recentReceipts);
+    } catch (error) {
+      console.error('Error loading receipts:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleViewReceipt = (id: number) => {
+    router.push(`/receipt/${id}`);
+  };
+
+  const openDeleteDialog = (id: number) => {
+    setSelectedReceiptId(id);
+    setIsDeleteDialogOpen(true);
+  };
+
+  const closeDeleteDialog = () => {
+    setIsDeleteDialogOpen(false);
+    setSelectedReceiptId(null);
+  };
+
+  const confirmDeleteReceipt = async () => {
+    if (selectedReceiptId === null) return;
+
+    try {
+      const success = await deleteReceipt(selectedReceiptId);
+      if (success) {
+        // Remove from local state
+        setReceipts(receipts.filter(receipt => receipt.id !== selectedReceiptId));
+      }
+    } catch (error) {
+      console.error('Error deleting receipt:', error);
+    } finally {
+      closeDeleteDialog();
+    }
+  };
+
   return (
-    <SafeAreaView className='pt-7  flex-1 bg-[#010101]'>
-      <MyTopBar text='Hello' onPress={()=>router.push('/setting')}/>
-      <ScrollView  className='w-full mt-10 px-5' showsVerticalScrollIndicator={true}>
+    <SafeAreaView className='pt-7 flex-1 bg-[#010101]'>
+      <MyTopBar text='👋 Hello Swifties' onPress={() => router.push('/setting')} />
+      <ScrollView className='w-full mt-10 px-5' showsVerticalScrollIndicator={true}>
         <Animated.View className="w-full h-[300px] overflow-hidden bg-neutral-900 p-3 py-0 rounded-2xl border-2 border-neutral-800" entering={FadeInDown.duration(300).springify()}>
           <Image
-              source={require("../../../assets/images/generate.png")}
-              alt="Scan flow Logo"
-              style={{
+            source={require("../../../assets/images/generate.png")}
+            alt="Scan flow Logo"
+            style={{
               width: '100%',
               height: '100%',
               resizeMode: 'contain',
@@ -37,77 +103,72 @@ export default function HomeScreen() {
           />
         </Animated.View>
 
-        <Animated.ScrollView className="mt-8 " entering={FadeInDown.duration(300).delay(200).springify()}>
-            <View className='flex flex-row '>
-              <Text className='text-base text-neutral-400 text-left pb-2' style={{fontFamily: 'Poppins_500Medium'}}>Recent Document</Text>
-            </View>
-            <ScrollView 
-                className='bg-neutral-950 flex flex-col h-[320px] gap-3 rounded-2xl border-2 border-neutral-900 p-3'
+        <Animated.View className="mt-8" entering={FadeInDown.duration(300).delay(200).springify()}>
+          <View className='flex flex-row'>
+            <Text className='text-base text-neutral-400 text-left pb-2' style={{ fontFamily: 'Poppins_500Medium' }}>Recent Receipts</Text>
+          </View>
+          <View
+            className='bg-neutral-950 flex flex-col h-[320px] rounded-2xl border-2 border-neutral-900 p-3'
+          >
+            {loading ? (
+              <View className="flex-1 justify-center items-center">
+                <Text className="text-white" style={{ fontFamily: 'Poppins_400Regular' }}>Loading receipts...</Text>
+              </View>
+            ) : receipts.length === 0 ? (
+              <View className="flex-1 justify-center items-center">
+                <MaterialIcons name="receipt" size={40} color="#555" />
+                <Text className="text-white text-lg mt-2" style={{ fontFamily: 'Poppins_400Regular' }}>No receipts found</Text>
+                <Text className="text-neutral-400 text-center mt-1" style={{ fontFamily: 'Poppins_400Regular' }}>
+                  Scan a receipt QR code to get started
+                </Text>
+              </View>
+            ) : (
+              <ScrollView
                 showsVerticalScrollIndicator={true}
-                contentContainerStyle={{ paddingBottom: 30 }}
+                contentContainerStyle={{ paddingBottom: 10 }}
               >
-
-                <Pressable className='p-4 bg-neutral-900 mb-4  rounded-2xl flex flex-row items-center justify-between'>
-                  <View className='flex flex-row items-center gap-3'>
-                    <Image 
-                      source={require("../../../assets/images/icon.png")}
-                      className='w-10 h-10'
-                    />
-                    <View>
-                      <Text className='text-white text-sm' style={{fontFamily: 'Poppins_600SemiBold'}}>ScanFlow - U2045</Text>
-                      <Text className='text-neutral-400 text-[12px] ' style={{fontFamily: 'Poppins_400Regular'}}>July, 12, 2025</Text>
+                {receipts.map((receipt) => (
+                  <TouchableOpacity
+                    key={receipt.id}
+                    onPress={() => handleViewReceipt(receipt.id)}
+                    className="bg-neutral-800 p-4 rounded-lg mb-3 border border-neutral-700"
+                  >
+                    <View className="flex-row justify-between items-center">
+                      <View>
+                        <Text style={{ fontFamily: 'Poppins_500Medium' }} className="text-white text-lg">{receipt.total}</Text>
+                        <Text style={{ fontFamily: 'Poppins_400Regular' }} className="text-neutral-400 mt-1 text-sm">Receipt #{receipt.receiptNumber}</Text>
+                        <Text style={{ fontFamily: 'Poppins_400Regular' }} className="text-neutral-400 mt-1 text-sm">{receipt.dateTime}</Text>
+                      </View>
+                      <View className="flex-row">
+                        <TouchableOpacity
+                          onPress={() => handleViewReceipt(receipt.id)}
+                          className="bg-blue-600 p-3 rounded-2xl mr-2"
+                        >
+                          <MaterialIcons name="visibility" size={20} color="white" />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => openDeleteDialog(receipt.id)}
+                          className="bg-orange-700 p-3 rounded-2xl"
+                        >
+                          <MaterialIcons name="delete" size={20} color="white" />
+                        </TouchableOpacity>
+                      </View>
                     </View>
-                  </View>
-
-                  <TouchableOpacity onPress={openDialog} className='flex justify-center items-center bg-neutral-700 p-2 rounded-full'>
-                    <MaterialIcons name='more-vert' size={15} color='white' />
                   </TouchableOpacity>
-                </Pressable>
+                ))}
 
-                <Pressable className='p-4 bg-neutral-900 mb-4 rounded-2xl flex flex-row items-center justify-between'>
-                  <View className='flex flex-row items-center gap-3'>
-                    <Image 
-                      source={require("../../../assets/images/icon.png")}
-                      className='w-10 h-10'
-                    />
-                    <View>
-                      <Text className='text-white text-sm' style={{fontFamily: 'Poppins_600SemiBold'}}>ScanFlow - U2045</Text>
-                      <Text className='text-neutral-400 text-[12px] ' style={{fontFamily: 'Poppins_400Regular'}}>July, 12, 2025</Text>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity onPress={openDialog} className='flex justify-center items-center bg-neutral-700 p-2 rounded-full'>
-                    <MaterialIcons name='more-vert' size={15} color='white' />
-                  </TouchableOpacity>
-                </Pressable>
-
-                <Pressable className='p-4 bg-neutral-900 mb-4 rounded-2xl flex flex-row items-center justify-between'>
-                  <View className='flex flex-row items-center gap-3'>
-                    <Image 
-                      source={require("../../../assets/images/icon.png")}
-                      className='w-10 h-10'
-                    />
-                    <View>
-                      <Text className='text-white text-sm' style={{fontFamily: 'Poppins_600SemiBold'}}>ScanFlow - U2045</Text>
-                      <Text className='text-neutral-400 text-[12px] ' style={{fontFamily: 'Poppins_400Regular'}}>July, 12, 2025</Text>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity onPress={openDialog} className='flex justify-center items-center bg-neutral-700 p-2 rounded-full'>
-                    <MaterialIcons name='more-vert' size={15} color='white' />
-                  </TouchableOpacity>
-                </Pressable>
-
-                <SolidButtonArrow text='View More' onPress={()=>router.push('/history')}/>
-              
-            </ScrollView>
-        </Animated.ScrollView>
+                <SolidButtonArrow text='View More' onPress={() => router.push('/history')} />
+              </ScrollView>
+            )}
+          </View>
+        </Animated.View>
       </ScrollView>
 
-      <Dialog 
+      {/* Delete Confirmation Dialog */}
+      <Dialog
         center
-        visible={isOpen} 
-        onDismiss={closeDialog}
+        visible={isDeleteDialogOpen}
+        onDismiss={closeDeleteDialog}
         containerStyle={{
           backgroundColor: "#262626",
           borderRadius: 15,
@@ -119,35 +180,31 @@ export default function HomeScreen() {
           marginHorizontal: 40
         }}
       >
-      <View className="items-center mb-4">
-        <Text className="text-white text-lg mb-1" style={{fontFamily: 'Poppins_600SemiBold'}}>ScanFlow - U2045</Text>
-        <Text className="text-neutral-400 text-sm text-center" style={{fontFamily: 'Poppins_400Regular'}}>July, 12, 2025</Text>
-      </View>
-      
-      <View className="flex-row gap-4 justify-center mt-4">
+        <View className="items-center mb-4">
+          <Text className="text-white text-lg mb-1" style={{ fontFamily: 'Poppins_600SemiBold' }}>Delete Receipt</Text>
+          <Text className="text-neutral-400 text-sm text-center" style={{ fontFamily: 'Poppins_400Regular' }}>
+            Are you sure you want to delete this receipt?
+          </Text>
+        </View>
 
-        <Link href={`/single-scan/${2}` } asChild>
-          <TouchableOpacity 
-            onPress={() => {}}
+        <View className="flex-row gap-4 justify-center mt-4">
+          <TouchableOpacity
+            onPress={closeDeleteDialog}
             className="bg-neutral-700 py-3 px-6 rounded-xl flex-row gap-2 items-center"
           >
-            <MaterialIcons name="visibility" size={18} color="white" />
-            <Text className="text-white text-sm" style={{fontFamily: 'Poppins_500Medium'}}>View</Text>
+            <MaterialIcons name="close" size={18} color="white" />
+            <Text className="text-white text-sm" style={{ fontFamily: 'Poppins_500Medium' }}>Cancel</Text>
           </TouchableOpacity>
-        </Link>
-        
-        <TouchableOpacity 
-          onPress={() => {
-            closeDialog();
-          }}
-          className="bg-red-700 py-3 px-6 rounded-xl flex-row gap-2 items-center"
-        >
-          <MaterialIcons name="delete" size={18} color="white" />
-          <Text className="text-white text-sm" style={{fontFamily: 'Poppins_500Medium'}}>Delete</Text>
-        </TouchableOpacity>
-      </View>
+
+          <TouchableOpacity
+            onPress={confirmDeleteReceipt}
+            className="bg-orange-700 py-3 px-6 rounded-xl flex-row gap-2 items-center"
+          >
+            <MaterialIcons name="delete" size={18} color="white" />
+            <Text className="text-white text-sm" style={{ fontFamily: 'Poppins_500Medium' }}>Delete</Text>
+          </TouchableOpacity>
+        </View>
       </Dialog>
     </SafeAreaView>
   );
 }
-

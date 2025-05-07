@@ -10,7 +10,7 @@ export const MyTopBar = ({text, onPress}: TabProps) => {
   return (
     <View className='flex flex-row justify-between items-center px-5'>
         <View>
-          <Text className='text-white text-xl' style={{fontFamily: 'Poppins_600SemiBold'}}>👋 {text} Swifties </Text>
+          <Text className='text-white text-xl' style={{fontFamily: 'Poppins_600SemiBold'}}>{text} </Text>
         </View>
         
         <TouchableOpacity onPress={onPress} className='bg-neutral-800 border-2 border-neutral-700 p-2 py-1.5 rounded-md'>
@@ -28,7 +28,7 @@ export const MyTopBarHistory = ({text, onPress}: TabProps) => {
         </View>
         
         <TouchableOpacity onPress={onPress} className='bg-neutral-800 border-2 border-neutral-700 p-2 py-1.5 rounded-md'>
-            <Ionicons name='menu' color={'white'} size={25} />
+            <Ionicons name='menu' color={'white'} size={20} />
         </TouchableOpacity>
     </View>
   )
@@ -37,9 +37,9 @@ export const MyTopBarHistory = ({text, onPress}: TabProps) => {
 
 export const MyTopBarLeft = ({text, onPress}: TabProps) => {
   return (
-    <View className='flex flex-row justify-between items-center px-5'>
+    <View className='flex flex-row justify-between items-center px-5 mt-3'>
         <TouchableOpacity onPress={onPress} className='bg-neutral-800 border-2 border-neutral-700 p-2 py-1.5 rounded-md'>
-            <Ionicons name='chevron-back' color={'white'} size={25} />
+            <Ionicons name='chevron-back' color={'white'} size={20} />
         </TouchableOpacity>
         <Text className='text-white text-xl' style={{fontFamily: 'Poppins_600SemiBold'}}>{text}</Text>
     </View>

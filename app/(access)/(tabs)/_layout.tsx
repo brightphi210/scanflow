@@ -74,7 +74,7 @@ export default function TabLayout() {
         options={{
           tabBarIcon: ({ focused }) => (
             <View style={{
-              backgroundColor: '#3D68FF',
+              backgroundColor: focused ? '#3D68FF' : '#262626',
               width: 56,
               height: 56,
               borderRadius: 28,

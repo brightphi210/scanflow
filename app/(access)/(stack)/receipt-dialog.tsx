@@ -1,8 +1,9 @@
-import React from 'react'
-import { View, Text, TouchableOpacity, ScrollView } from 'react-native'
+import React, { useState } from 'react'
+import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native'
 import { Dialog } from 'react-native-ui-lib'
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import MaterialIcons from '@expo/vector-icons/MaterialIcons'
+import { router } from 'expo-router'
+import { saveReceipt } from '../../../components/utils/database'
 
 interface ReceiptDialogProps {
   visible: boolean
@@ -11,24 +12,31 @@ interface ReceiptDialogProps {
 }
 
 const ReceiptDialog: React.FC<ReceiptDialogProps> = ({ visible, onDismiss, receiptData }) => {
-  console.log('Receipt Data:', receiptData)
+  const [isSaving, setIsSaving] = useState(false)
   
-  const saveReceipt = async () => {
+  const handleSaveReceipt = async () => {
     try {
-      // Generate a unique key for this receipt
-      const key = `receipt_${Date.now()}`
-      await AsyncStorage.setItem(key, JSON.stringify(receiptData))
-      console.log('✅ Receipt saved to AsyncStorage')
+      setIsSaving(true)
+      
+      // Save receipt to SQLite database
+      await saveReceipt(receiptData)
+      
+      console.log('✅ Receipt saved to SQLite database')
+      setIsSaving(false)
       onDismiss()
+      
+      // Navigate to the history screen after saving
+      router.push('/history')
     } catch (error) {
-      console.error('❌ Failed to save receipt to AsyncStorage:', error)
+      console.error('❌ Failed to save receipt to database:', error)
+      setIsSaving(false)
     }
   }
 
   // Function to format items from the receipt data
   const renderItems = () => {
     if (Array.isArray(receiptData.items)) {
-      return receiptData.items.map((item:any, index:any) => (
+      return receiptData.items.map((item: any, index: number) => (
         <View key={index} className="py-4 border-b border-neutral-500 border-dashed">
           <View className="flex flex-row justify-between items-center">
             <Text style={{fontFamily: 'Poppins_400Regular'}} className="text-white text-base">{item.name}</Text>
@@ -88,16 +96,24 @@ const ReceiptDialog: React.FC<ReceiptDialogProps> = ({ visible, onDismiss, recei
             <TouchableOpacity 
               onPress={onDismiss}
               className="bg-neutral-700 px-5 py-3 rounded-lg flex-1 mr-3 flex flex-row justify-center items-center"
+              disabled={isSaving}
             >
               <MaterialIcons name="close" size={18} color="#fff" />
               <Text style={{fontFamily: 'Poppins_500Medium'}} className="text-white text-base ml-2">Close</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              onPress={saveReceipt}
+              onPress={handleSaveReceipt}
               className="bg-green-600 px-5 py-3 rounded-lg flex-1 flex flex-row justify-center items-center"
+              disabled={isSaving}
             >
-              <MaterialIcons name="save" size={18} color="#fff" />
-              <Text style={{fontFamily: 'Poppins_500Medium'}} className="text-white text-base ml-2">Save</Text>
+              {isSaving ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <>
+                  <MaterialIcons name="save" size={18} color="#fff" />
+                  <Text style={{fontFamily: 'Poppins_500Medium'}} className="text-white text-base ml-2">Save</Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         </ScrollView>

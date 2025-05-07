@@ -18,13 +18,12 @@ import {
   ScrollView,
 } from "react-native"
 import { Overlay } from "../../../components/Overlay"
-import { useEffect, useRef, useState } from "react"
-import { SolidButtonArrowLeft, SolidButtonGreenArrowLeft } from "@/components/CustomButtons"
+import { useEffect, useRef, useState, useCallback } from "react"
+import { SolidButtonArrowLeft } from "@/components/CustomButtons"
 import Animated, { FadeInDown } from "react-native-reanimated"
 import RNBluetoothClassic, { type BluetoothDevice } from "react-native-bluetooth-classic"
-import { Dialog } from "react-native-ui-lib"
-import MaterialIcons from "@expo/vector-icons/MaterialIcons"
 import ReceiptDialog from "./receipt-dialog"
+import { useFocusEffect } from "expo-router"
 
 interface ReceiptItem {
   name: string
@@ -43,11 +42,22 @@ interface ReceiptData {
   receiptNumber: string
 }
 
+// Default empty receipt data
+const DEFAULT_RECEIPT_DATA: ReceiptData = {
+  employee: "Unknown",
+  pos: "",
+  items: [],
+  total: "#0.00",
+  paymentMethod: "Cash",
+  paymentAmount: "#0.00",
+  dateTime: new Date().toLocaleString(),
+  receiptNumber: "0-0000",
+}
+
 const Scanner = () => {
-  const [isOpen, setIsOpen] = useState(false)
   const [showReceiptDialog, setShowReceiptDialog] = useState(false)
-  const [isDataLoading, setIsDataLoading] = useState(false) // State for tracking data loading
-  const [cameraActive, setCameraActive] = useState(true) // New state to control camera visibility
+  const [isDataLoading, setIsDataLoading] = useState(false)
+  const [cameraActive, setCameraActive] = useState(true)
 
   const qrLock = useRef(false)
   const appState = useRef(AppState.currentState)
@@ -62,20 +72,52 @@ const Scanner = () => {
   const [fullDataBuffer, setFullDataBuffer] = useState<string[]>([])
   const isReceivingData = useRef(false)
   const dataTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const [receiptData, setReceiptData] = useState<ReceiptData>(DEFAULT_RECEIPT_DATA)
 
-  const [receiptData, setReceiptData] = useState<ReceiptData>({
-    employee: "Unknown",
-    pos: "",
-    items: [],
-    total: "#0.00",
-    paymentMethod: "Cash",
-    paymentAmount: "#0.00",
-    dateTime: new Date().toLocaleString(),
-    receiptNumber: "0-0000",
-  })
-
-  const CONNECTION_CHECK_INTERVAL = 5000
+  const CONNECTION_CHECK_INTERVAL = 6000
   const DATA_LOADING_TIMEOUT = 2000
+
+  // Reset all states when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      // Reset states when screen comes into focus
+      resetAllStates()
+      
+      return () => {
+        // Clean up when screen loses focus
+        cleanupOnExit()
+      }
+    }, [])
+  )
+
+  // Function to reset all states to initial values
+  const resetAllStates = () => {
+    setShowReceiptDialog(false)
+    setIsDataLoading(false)
+    setCameraActive(true)
+    qrLock.current = false
+    setScannedAddress(null)
+    setFullDataBuffer([])
+    setReceiptData(DEFAULT_RECEIPT_DATA)
+    isReceivingData.current = false
+    
+    // Don't reset Bluetooth connection states here
+    // as they will be initialized in the useEffect
+  }
+
+  // Function to clean up resources when exiting
+  const cleanupOnExit = () => {
+    cleanupDataSubscription()
+    disconnectFromDevice()
+    if (connectionInterval) {
+      clearInterval(connectionInterval)
+      setConnectionInterval(null)
+    }
+    if (dataTimeoutRef.current) {
+      clearTimeout(dataTimeoutRef.current)
+      dataTimeoutRef.current = null
+    }
+  }
 
   const requestPermissions = async () => {
     if (Platform.OS === "ios") {
@@ -235,16 +277,8 @@ const Scanner = () => {
 
     return () => {
       mounted = false
-      cleanupDataSubscription()
+      cleanupOnExit()
       disconnectListener.remove()
-      disconnectFromDevice()
-      if (connectionInterval) {
-        clearInterval(connectionInterval)
-      }
-      // Clear data timeout if component unmounts
-      if (dataTimeoutRef.current) {
-        clearTimeout(dataTimeoutRef.current)
-      }
     }
   }, [])
 
@@ -342,8 +376,8 @@ const Scanner = () => {
         const formatted = formatPrinterData(completeData)
         console.log("📊 COMPLETE RAW DATA:", completeData)
 
-        // Now show the success dialog
-        setIsOpen(true)
+        // Show receipt dialog directly instead of success dialog
+        setShowReceiptDialog(true)
       }
     }, DATA_LOADING_TIMEOUT)
   }
@@ -358,7 +392,7 @@ const Scanner = () => {
 
       // Process data but don't show dialog yet
       const completeData = fullDataBuffer.join(" ")
-      const formatted = formatPrinterData(completeData)
+      formatPrinterData(completeData)
     }
   }, [fullDataBuffer])
 
@@ -398,16 +432,30 @@ const Scanner = () => {
   }, [])
 
   const startReadingFromDevice = async (device: BluetoothDevice) => {
-    if (!device) return
+  // If already receiving data, don't start a new read operation
+  if (isReceivingData.current || isDataLoading) {
+    console.log("⚠️ Already receiving data, ignoring new read request")
+    return
+  }
 
-    try {
-      // Clear previous data buffer
-      setFullDataBuffer([])
+  if (!device) return
+
+  try {
+    // Clear previous data buffer
+    setFullDataBuffer([])
+    
+    // Show a loading indicator while waiting to start reading
+    setDeviceStatus(`Connected to ${device.name || device.address}. Preparing to read data...`)
+    
+    // Add a delay before starting to read data
+    console.log("⏳ Waiting before starting to read data...")
+    
+    // Wait 1.5 seconds before starting to read data
+    setTimeout(() => {
       isReceivingData.current = true
-      setIsDataLoading(true) // Set loading state to true when we start reading
-      setCameraActive(false) // Disable camera when starting to read data
-      qrLock.current = true // Lock QR scanning when data is being received
-
+      setIsDataLoading(true)
+      setCameraActive(false)
+      
       console.log(`👂 Setting up data listener for device: ${device.name || device.address}`)
 
       cleanupDataSubscription()
@@ -436,14 +484,16 @@ const Scanner = () => {
 
       setDataSubscription(subscription)
       console.log("✅ Data listener established successfully")
-    } catch (error) {
-      console.error("❌ Error setting up data listener:", error)
-      console.log(`Error setting up data listener: ${error instanceof Error ? error.message : String(error)}`)
-      isReceivingData.current = false // Reset flag on error
-      setIsDataLoading(false) // Also reset loading state on error
-      qrLock.current = false // Unlock QR scanning if there's an error
-    }
+    }, 1500) // 1.5 second delay
+    
+  } catch (error) {
+    console.error("❌ Error setting up data listener:", error)
+    console.log(`Error setting up data listener: ${error instanceof Error ? error.message : String(error)}`)
+    isReceivingData.current = false
+    setIsDataLoading(false)
+    qrLock.current = false
   }
+}
 
   const startConnectionCheckInterval = (device: BluetoothDevice) => {
     if (connectionInterval) {
@@ -503,67 +553,73 @@ const Scanner = () => {
   }
 
   const connectToDevice = async (macAddress: string) => {
-    if (isInitializing) {
-      setDeviceStatus("Bluetooth is initializing, please wait...")
+  // If already receiving data or loading, don't allow new connections
+  if (isReceivingData.current || isDataLoading) {
+    console.log("⚠️ Already processing data, ignoring new connection request")
+    return
+  }
+  
+  if (isInitializing) {
+    setDeviceStatus("Bluetooth is initializing, please wait...")
+    return
+  }
+
+  try {
+    // Make sure we're disconnected first
+    if (connectedDevice) {
+      await disconnectFromDevice()
+    }
+
+    setDeviceStatus(`Searching for device: ${macAddress}...`)
+    setIsScanning(true)
+
+    // Find the device in paired devices list
+    const targetDevice = pairedDevices.find((device) => device.address.toUpperCase() === macAddress.toUpperCase())
+
+    if (!targetDevice) {
+      setDeviceStatus(
+        `Device with address ${macAddress} is not paired. Please pair the device in your Bluetooth settings first.`
+      )
+      setIsScanning(false)
+      qrLock.current = false // Unlock QR scanning if device not found
       return
     }
 
-    try {
-      // Make sure we're disconnected first
-      if (connectedDevice) {
-        await disconnectFromDevice()
-      }
+    setDeviceStatus(`Device found: ${targetDevice.name || targetDevice.address}. Connecting...`)
 
-      setDeviceStatus(`Searching for device: ${macAddress}...`)
-      setIsScanning(true)
+    // Connect to the device
+    const device = await RNBluetoothClassic.connectToDevice(targetDevice.address, {
+      delimiter: "",
+      charset: "utf-8",
+    })
 
-      // Find the device in paired devices list
-      const targetDevice = pairedDevices.find((device) => device.address.toUpperCase() === macAddress.toUpperCase())
+    // Update state
+    setConnectedDevice(device)
+    setIsScanning(false)
+    setDeviceStatus(`Connected to: ${device.name || device.address}`)
 
-      if (!targetDevice) {
-        setDeviceStatus(
-          `Device with address ${macAddress} is not paired. Please pair the device in your Bluetooth settings first.`,
-        )
-        setIsScanning(false)
-        qrLock.current = false // Unlock QR scanning if device not found
-        return
-      }
+    // Clear old data
+    setFullDataBuffer([])
+    setIsDataLoading(false) // Reset loading state before starting new data read
 
-      setDeviceStatus(`Device found: ${targetDevice.name || targetDevice.address}. Connecting...`)
-
-      // Connect to the device
-      const device = await RNBluetoothClassic.connectToDevice(targetDevice.address, {
-        delimiter: "",
-        charset: "utf-8",
-      })
-
-      // Update state
-      setConnectedDevice(device)
-      setIsScanning(false)
-      setDeviceStatus(`Connected to: ${device.name || device.address}`)
-
-      // Clear old data
-      setFullDataBuffer([])
-      setIsDataLoading(false) // Reset loading state before starting new data read
-
-      // Start reading data after successful connection
-      await startReadingFromDevice(device)
-      startConnectionCheckInterval(device)
-    } catch (error) {
-      console.error("❌ Bluetooth connection error:", error)
-      setIsScanning(false)
-      console.log(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
-      setDeviceStatus(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
-      setConnectedDevice(null)
-      cleanupDataSubscription()
-      setIsDataLoading(false) // Reset loading state on error
-      qrLock.current = false // Unlock QR scanning on error
-      if (connectionInterval) {
-        clearInterval(connectionInterval)
-        setConnectionInterval(null)
-      }
+    // Start reading data after successful connection
+    await startReadingFromDevice(device)
+    startConnectionCheckInterval(device)
+  } catch (error) {
+    console.error("❌ Bluetooth connection error:", error)
+    setIsScanning(false)
+    console.log(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
+    setDeviceStatus(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
+    setConnectedDevice(null)
+    cleanupDataSubscription()
+    setIsDataLoading(false)
+    qrLock.current = false // Unlock QR scanning on error
+    if (connectionInterval) {
+      clearInterval(connectionInterval)
+      setConnectionInterval(null)
     }
   }
+}
 
   const normalizeMacAddress = (macAddress: string): string => {
     const cleanMac = macAddress.replace(/[^0-9A-Fa-f]/g, "")
@@ -574,46 +630,76 @@ const Scanner = () => {
   }
 
   const handleBarcodeScanned = ({ data }: any) => {
-    if (data && !qrLock.current) {
-      qrLock.current = true
-      console.log("QR Code scanned, MAC address:", data)
-      const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]?){5}([0-9A-Fa-f]{2})$/
-      if (!macAddressRegex.test(data)) {
-        setDeviceStatus("Invalid MAC address format in QR code")
-        setTimeout(() => {
-          qrLock.current = false
-        }, 3000)
-        return
-      }
-
-      // Reset the QR lock after a delay to allow for new scans
+  // If already locked, receiving data, or loading, don't allow new scans
+  if (qrLock.current || isReceivingData.current || isDataLoading) {
+    console.log("⚠️ Already processing data or locked, ignoring new scan")
+    return
+  }
+  
+  if (data) {
+    // Lock immediately to prevent double scans
+    qrLock.current = true
+    console.log("QR Code scanned, MAC address:", data)
+    
+    const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]?){5}([0-9A-Fa-f]{2})$/
+    if (!macAddressRegex.test(data)) {
+      setDeviceStatus("Invalid MAC address format in QR code")
       setTimeout(() => {
         qrLock.current = false
-        console.log("🔓 QR lock reset - ready for next scan")
-      }, 5000)
-
-      setScannedAddress(data)
-      connectToDevice(normalizeMacAddress(data))
+      }, 3000)
+      return
     }
-  }
 
-  const handleViewReceipt = () => {
-    setIsOpen(false)
-    setShowReceiptDialog(true)
+    setScannedAddress(data)
+    
+    // Show a confirmation dialog before connecting
+    Alert.alert(
+      "Connect to Device",
+      `Do you want to connect to device with address: ${data}?`,
+      [
+        {
+          text: "Cancel",
+          onPress: () => {
+            qrLock.current = false
+            console.log("🔓 Connection cancelled - QR lock reset")
+          },
+          style: "cancel"
+        },
+        {
+          text: "Connect",
+          onPress: () => connectToDevice(normalizeMacAddress(data))
+        }
+      ]
+    )
   }
+}
 
-  // New function to handle rescanning
-  const handleRescan = () => {
-    // Close the receipt dialog
+  // Handle closing the receipt dialog and clearing data
+  const handleCloseReceiptDialog = () => {
     setShowReceiptDialog(false)
-
+    
     // Reset states to enable scanning again
     setCameraActive(true)
     qrLock.current = false
-    setScannedAddress(null)
+    
+    // Clear the data
     setFullDataBuffer([])
+    setReceiptData(DEFAULT_RECEIPT_DATA)
+    
+    console.log("🧹 Receipt dialog closed - data cleared")
+  }
 
-    console.log("🔄 Rescan initiated - camera activated")
+  // Handle back button press
+  const handleBackPress = () => {
+    // Clean up and disconnect
+    disconnectFromDevice()
+    
+    // Clear all data before navigating back
+    setFullDataBuffer([])
+    setReceiptData(DEFAULT_RECEIPT_DATA)
+    
+    // Navigate back
+    router.back()
   }
 
   return (
@@ -640,14 +726,14 @@ const Scanner = () => {
       {isDataLoading && (
         <View style={[StyleSheet.absoluteFill, { justifyContent: "center", alignItems: "center" }]}>
           <ActivityIndicator size="large" color="#00ff00" />
-          <Text style={{ color: "#00ff00", marginTop: 16, fontWeight: "bold" }} className="text-lg">
-            Receiving data from device...
+          <Text style={{ color: "#00ff00", marginTop: 16, fontWeight: "bold" }} className="text-xl">
+            Generating Receipt . . .
           </Text>
           <Text
-            className="w-[70%] text-xs"
+            className="w-[70%] text-sm"
             style={{ color: "#ffffff", marginTop: 8, textAlign: "center", paddingHorizontal: 40 }}
           >
-            Please keep your device connected and wait while we process the receipt data
+            Please keep your device connected & wait while we process the receipt data
           </Text>
         </View>
       )}
@@ -686,48 +772,13 @@ const Scanner = () => {
       >
         <SolidButtonArrowLeft
           text="Back"
-          onPress={() => {
-            disconnectFromDevice()
-            router.back()
-          }}
+          onPress={handleBackPress}
         />
       </Animated.View>
 
-      {/* Success dialog - now doesn't show when data is loading */}
-      <Dialog
-        visible={isOpen && !isDataLoading}
-        onDismiss={() => {
-          ""
-        }}
-      >
-        <View>
-          <View className="p-5 py-10 bg-neutral-900 border border-neutral-700 rounded-xl">
-            <View className="bg-green-200 w-fit justify-center flex items-center m-auto rounded-full p-4">
-              <MaterialIcons name="check" size={50} color={"green"} />
-            </View>
-            <View>
-              <Text style={{ fontFamily: "Poppins_500Medium" }} className="text-lg text-center pt-5 text-white">
-                Receipt Successfully Generated 🎉
-              </Text>
-              <Text
-                style={{ fontFamily: "Poppins_500Medium" }}
-                className="text-xs w-[90%] m-auto text-center pt-3 text-neutral-300"
-              >
-                Your receipt has been successfully generated, you can now view it in the history tab.
-              </Text>
-            </View>
-
-            <View className="w-[70%] mt-5 m-auto">
-              <SolidButtonGreenArrowLeft text="View Receipt" onPress={handleViewReceipt} />
-            </View>
-          </View>
-        </View>
-      </Dialog>
-
-      {/* Receipt Dialog - now passing the rescan handler */}
       <ReceiptDialog
         visible={showReceiptDialog}
-        onDismiss={() => setShowReceiptDialog(false)}
+        onDismiss={handleCloseReceiptDialog}
         receiptData={receiptData}
       />
     </SafeAreaView>
