@@ -66,3 +66,14 @@ export const SolidWhiteButtonArrowLeft = ({text, onPress}: ButtonProps)=>{
 }
 
 
+export const SolidButtonGreenArrowLeft = ({text, onPress}: ButtonProps)=>{
+    return (
+        <TouchableOpacity onPress={onPress} className="flex flex-row justify-center items-center gap-4 bg-green-600 p-5 w-full rounded-lg">
+            <Text className="text-white text-sm" style={{fontFamily: 'Poppins_500Medium'}}>{text}</Text>
+        </TouchableOpacity>
+    )
+}
+
+
+
+
