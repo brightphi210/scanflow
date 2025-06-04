@@ -4,6 +4,7 @@ import { CameraView } from "expo-camera"
 import { router } from "expo-router"
 import * as Location from "expo-location"
 import * as ExpoDevice from "expo-device"
+import * as Haptics from "expo-haptics" // Add this import
 import {
   AppState,
   Platform,
@@ -73,21 +74,23 @@ const Scanner = () => {
   const isReceivingData = useRef(false)
   const dataTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [receiptData, setReceiptData] = useState<ReceiptData>(DEFAULT_RECEIPT_DATA)
+  // New state to track if a receipt has been successfully processed
+  const hasProcessedReceipt = useRef(false);
 
   const CONNECTION_CHECK_INTERVAL = 6000
-  const DATA_LOADING_TIMEOUT = 2000
+  const DATA_LOADING_TIMEOUT = 2000 // Increased slightly for robustness
 
   // Reset all states when screen comes into focus
   useFocusEffect(
     useCallback(() => {
       // Reset states when screen comes into focus
       resetAllStates()
-      
+
       return () => {
         // Clean up when screen loses focus
         cleanupOnExit()
       }
-    }, [])
+    }, []),
   )
 
   // Function to reset all states to initial values
@@ -100,7 +103,8 @@ const Scanner = () => {
     setFullDataBuffer([])
     setReceiptData(DEFAULT_RECEIPT_DATA)
     isReceivingData.current = false
-    
+    hasProcessedReceipt.current = false // Reset this flag as well
+
     // Don't reset Bluetooth connection states here
     // as they will be initialized in the useEffect
   }
@@ -272,6 +276,10 @@ const Scanner = () => {
           clearInterval(connectionInterval)
           setConnectionInterval(null)
         }
+        setIsDataLoading(false); // Reset loading state on unexpected disconnect
+        qrLock.current = false; // Unlock QR scanning
+        isReceivingData.current = false; // Reset data receiving flag
+        hasProcessedReceipt.current = false; // Reset processed flag
       }
     })
 
@@ -366,35 +374,38 @@ const Scanner = () => {
 
     // Set a new timeout
     dataTimeoutRef.current = setTimeout(() => {
-      // If we still have data and we're in loading state, consider data reception complete
-      if (fullDataBuffer.length > 0 && isDataLoading) {
+      // Only process if data is loading and we haven't already processed a receipt
+      if (fullDataBuffer.length > 0 && isDataLoading && !hasProcessedReceipt.current) {
         console.log("📊 Data reception timeout - assuming data is complete")
         setIsDataLoading(false)
+        isReceivingData.current = false; // Important: Stop receiving data
 
-        // Process and display the data
         const completeData = fullDataBuffer.join(" ")
-        const formatted = formatPrinterData(completeData)
-        console.log("📊 COMPLETE RAW DATA:", completeData)
+        formatPrinterData(completeData) // This updates receiptData state
 
-        // Show receipt dialog directly instead of success dialog
+        // Now that data is processed, set the flag and show the dialog
+        hasProcessedReceipt.current = true;
         setShowReceiptDialog(true)
+
+        // Immediately clean up the subscription after data is considered complete
+        cleanupDataSubscription();
       }
     }, DATA_LOADING_TIMEOUT)
   }
 
   // Modified useEffect to handle data loading state
   useEffect(() => {
-    if (fullDataBuffer.length > 0) {
-      // We have data, set loading to true and reset the timeout
+    // This useEffect will now primarily set the loading state and kick off the timeout.
+    // The actual processing and dialog display will happen in resetDataTimeout once data is complete.
+    if (fullDataBuffer.length > 0 && isReceivingData.current && !hasProcessedReceipt.current) {
       setIsDataLoading(true)
       setCameraActive(false) // Turn off camera when loading data
       resetDataTimeout()
-
-      // Process data but don't show dialog yet
-      const completeData = fullDataBuffer.join(" ")
-      formatPrinterData(completeData)
+    } else if (fullDataBuffer.length === 0 && !isReceivingData.current && !isDataLoading) {
+        // This condition ensures camera is active when no data is expected or being processed
+        setCameraActive(true);
     }
-  }, [fullDataBuffer])
+  }, [fullDataBuffer, isReceivingData.current, isDataLoading, hasProcessedReceipt.current]);
 
   const cleanupDataSubscription = () => {
     if (dataSubscription) {
@@ -402,7 +413,9 @@ const Scanner = () => {
       dataSubscription.remove()
       setDataSubscription(null)
     }
-    isReceivingData.current = false
+    // Only set this to false if we explicitly know we're done with a data read cycle.
+    // This is now managed more directly after `dataTimeoutRef` processes the data.
+    // isReceivingData.current = false;
 
     // Also clear any data timeout
     if (dataTimeoutRef.current) {
@@ -414,7 +427,10 @@ const Scanner = () => {
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (nextAppState) => {
       if (appState.current.match(/inactive|background/) && nextAppState === "active") {
-        qrLock.current = false
+        // Only reset qrLock if not currently in data loading or receiving state
+        if (!isDataLoading && !isReceivingData.current) {
+            qrLock.current = false
+        }
         RNBluetoothClassic.isBluetoothEnabled()
           .then((isEnabled) => {
             if (!isEnabled) {
@@ -429,71 +445,126 @@ const Scanner = () => {
     return () => {
       subscription.remove()
     }
-  }, [])
+  }, [isDataLoading, isReceivingData.current]) // Depend on these to react to their changes
 
   const startReadingFromDevice = async (device: BluetoothDevice) => {
-  // If already receiving data, don't start a new read operation
-  if (isReceivingData.current || isDataLoading) {
-    console.log("⚠️ Already receiving data, ignoring new read request")
-    return
-  }
+    // If already receiving data, don't start a new read operation
+    if (isReceivingData.current || isDataLoading) {
+      console.log("⚠️ Already receiving data or loading, ignoring new read request")
+      return
+    }
 
-  if (!device) return
+    if (!device) return
 
-  try {
-    // Clear previous data buffer
-    setFullDataBuffer([])
-    
-    // Show a loading indicator while waiting to start reading
-    setDeviceStatus(`Connected to ${device.name || device.address}. Preparing to read data...`)
-    
-    // Add a delay before starting to read data
-    console.log("⏳ Waiting before starting to read data...")
-    
-    // Wait 1.5 seconds before starting to read data
-    setTimeout(() => {
-      isReceivingData.current = true
-      setIsDataLoading(true)
-      setCameraActive(false)
-      
-      console.log(`👂 Setting up data listener for device: ${device.name || device.address}`)
+    try {
+      // Clear previous data buffer and reset flags for a new read
+      setFullDataBuffer([])
+      hasProcessedReceipt.current = false; // Crucial: prepare for a new receipt
+      isReceivingData.current = true; // Set this early to prevent re-entry
 
-      cleanupDataSubscription()
+      // Show a loading indicator while waiting to start reading
+      setDeviceStatus(`Connected to ${device.name || device.address}. Preparing to read data...`)
 
-      // Create new subscription
-      const subscription = device.onDataReceived((data) => {
-        console.log("Raw data buffer:", data.data)
+      console.log("📤 Sending scan2flow command to device...")
 
-        if (data && data.data) {
-          const receivedStr = data.data.trim()
-          setFullDataBuffer((prev) => [...prev, receivedStr])
+      // Send the scan2flow command to the device
+      try {
+        await device.write("scan2flow")
+        console.log("✅ scan2flow command sent successfully")
+      } catch (writeError) {
+        console.error("❌ Error sending scan2flow command:", writeError)
+        setDeviceStatus(
+          `Error sending command: ${writeError instanceof Error ? writeError.message : String(writeError)}`,
+        )
+        isReceivingData.current = false; // Reset if command fails
+        setIsDataLoading(false);
+        setCameraActive(true);
+        qrLock.current = false;
+        return
+      }
 
-          // Reset the data timeout since we received new data
-          resetDataTimeout()
+      // Add a delay before starting to read data
+      console.log("⏳ Waiting for device to process command...")
 
-          try {
-            const jsonObj = JSON.parse(receivedStr)
-            console.log(`📊 Parsed JSON:`, jsonObj)
-          } catch (e) {
-            // Not JSON, which is fine
+      // Wait 2 seconds before starting to read data (giving device time to process the command)
+      setTimeout(() => {
+        setIsDataLoading(true) // Start loading state when we expect data
+        setCameraActive(false) // Turn off camera during data reception
+
+        console.log(`👂 Setting up data listener for device: ${device.name || device.address}`)
+
+        cleanupDataSubscription() // Ensure any old subscription is gone
+
+        // Create new subscription
+        const subscription = device.onDataReceived((data) => {
+          console.log("Raw data buffer:", data.data)
+
+          // Only process data if we are explicitly expecting it and haven't processed a receipt yet
+          if (data && data.data && isReceivingData.current && !hasProcessedReceipt.current) {
+            const receivedStr = data.data.trim()
+            setFullDataBuffer((prev) => [...prev, receivedStr])
+
+            // Reset the data timeout since we received new data
+            resetDataTimeout()
+
+            try {
+              const jsonObj = JSON.parse(receivedStr)
+              console.log(`📊 Parsed JSON:`, jsonObj)
+            } catch (e) {
+              // Not JSON, which is fine
+            }
+          } else if (hasProcessedReceipt.current) {
+              console.log("⚠️ Ignoring data: Receipt already processed for this session.")
+              cleanupDataSubscription(); // Ensure listener is removed if data arrives after processing
+          } else {
+            console.log("⚠️ Received data object is empty or undefined, or not expecting data.")
           }
-        } else {
-          console.log("⚠️ Received data object is empty or undefined.")
-        }
-      })
+        })
 
-      setDataSubscription(subscription)
-      console.log("✅ Data listener established successfully")
-    }, 1500) // 1.5 second delay
-    
-  } catch (error) {
-    console.error("❌ Error setting up data listener:", error)
-    console.log(`Error setting up data listener: ${error instanceof Error ? error.message : String(error)}`)
-    isReceivingData.current = false
-    setIsDataLoading(false)
-    qrLock.current = false
+        setDataSubscription(subscription)
+        console.log("✅ Data listener established successfully")
+      }, 2000) // 2 second delay (increased from 1.5s to give more time after command)
+    } catch (error) {
+      console.error("❌ Error setting up data listener:", error)
+      console.log(`Error setting up data listener: ${error instanceof Error ? error.message : String(error)}`)
+      isReceivingData.current = false
+      setIsDataLoading(false)
+      qrLock.current = false
+      setCameraActive(true); // Re-enable camera on error
+      hasProcessedReceipt.current = false;
+      cleanupDataSubscription(); // Clean up if an error occurs during setup
+    }
   }
-}
+
+  const sendScan2FlowCommand = async () => {
+    if (!connectedDevice) {
+      setDeviceStatus("No device connected")
+      return
+    }
+
+    // Reset for a new scan operation
+    setFullDataBuffer([]);
+    hasProcessedReceipt.current = false;
+    isReceivingData.current = false; // Ensure it's false before starting new read
+    setIsDataLoading(false);
+    setCameraActive(false); // Camera off immediately when command is sent
+
+    try {
+      setDeviceStatus("Sending scan2flow command...")
+      await connectedDevice.write("scan2flow")
+      setDeviceStatus("scan2flow command sent successfully")
+      // After sending command, immediately attempt to read from device
+      await startReadingFromDevice(connectedDevice);
+    } catch (error) {
+      console.error("Error sending scan2flow command:", error)
+      setDeviceStatus(`Error sending command: ${error instanceof Error ? error.message : String(error)}`)
+      setIsDataLoading(false);
+      setCameraActive(true);
+      qrLock.current = false;
+      isReceivingData.current = false;
+      hasProcessedReceipt.current = false;
+    }
+  }
 
   const startConnectionCheckInterval = (device: BluetoothDevice) => {
     if (connectionInterval) {
@@ -512,6 +583,9 @@ const Scanner = () => {
             setConnectionInterval(null)
             setIsDataLoading(false) // Reset loading state if device disconnects
             qrLock.current = false // Unlock QR scanning if device disconnects
+            isReceivingData.current = false; // Reset data receiving flag
+            hasProcessedReceipt.current = false; // Reset processed flag
+            setCameraActive(true); // Re-enable camera
           }
         } catch (error) {
           console.error("Error checking connection status:", error)
@@ -523,6 +597,9 @@ const Scanner = () => {
           setConnectionInterval(null)
           setIsDataLoading(false) // Reset loading state on error
           qrLock.current = false // Unlock QR scanning on error
+          isReceivingData.current = false; // Reset data receiving flag
+          hasProcessedReceipt.current = false; // Reset processed flag
+          setCameraActive(true); // Re-enable camera
         }
       } else {
         clearInterval(intervalId)
@@ -542,6 +619,9 @@ const Scanner = () => {
         setConnectedDevice(null)
         setIsDataLoading(false) // Reset loading state on disconnect
         qrLock.current = false // Unlock QR scanning on disconnect
+        isReceivingData.current = false; // Reset data receiving flag
+        hasProcessedReceipt.current = false; // Reset processed flag
+        setCameraActive(true); // Re-enable camera
         if (connectionInterval) {
           clearInterval(connectionInterval)
           setConnectionInterval(null)
@@ -553,73 +633,80 @@ const Scanner = () => {
   }
 
   const connectToDevice = async (macAddress: string) => {
-  // If already receiving data or loading, don't allow new connections
-  if (isReceivingData.current || isDataLoading) {
-    console.log("⚠️ Already processing data, ignoring new connection request")
-    return
-  }
-  
-  if (isInitializing) {
-    setDeviceStatus("Bluetooth is initializing, please wait...")
-    return
-  }
-
-  try {
-    // Make sure we're disconnected first
-    if (connectedDevice) {
-      await disconnectFromDevice()
-    }
-
-    setDeviceStatus(`Searching for device: ${macAddress}...`)
-    setIsScanning(true)
-
-    // Find the device in paired devices list
-    const targetDevice = pairedDevices.find((device) => device.address.toUpperCase() === macAddress.toUpperCase())
-
-    if (!targetDevice) {
-      setDeviceStatus(
-        `Device with address ${macAddress} is not paired. Please pair the device in your Bluetooth settings first.`
-      )
-      setIsScanning(false)
-      qrLock.current = false // Unlock QR scanning if device not found
+    // If already receiving data or loading, don't allow new connections
+    if (isReceivingData.current || isDataLoading) {
+      console.log("⚠️ Already processing data, ignoring new connection request")
       return
     }
 
-    setDeviceStatus(`Device found: ${targetDevice.name || targetDevice.address}. Connecting...`)
+    if (isInitializing) {
+      setDeviceStatus("Bluetooth is initializing, please wait...")
+      return
+    }
 
-    // Connect to the device
-    const device = await RNBluetoothClassic.connectToDevice(targetDevice.address, {
-      delimiter: "",
-      charset: "utf-8",
-    })
+    try {
+      // Make sure we're disconnected first
+      if (connectedDevice) {
+        await disconnectFromDevice()
+      }
 
-    // Update state
-    setConnectedDevice(device)
-    setIsScanning(false)
-    setDeviceStatus(`Connected to: ${device.name || device.address}`)
+      setDeviceStatus(`Searching for device: ${macAddress}...`)
+      setIsScanning(true)
 
-    // Clear old data
-    setFullDataBuffer([])
-    setIsDataLoading(false) // Reset loading state before starting new data read
+      // Find the device in paired devices list
+      const targetDevice = pairedDevices.find((device) => device.address.toUpperCase() === macAddress.toUpperCase())
 
-    // Start reading data after successful connection
-    await startReadingFromDevice(device)
-    startConnectionCheckInterval(device)
-  } catch (error) {
-    console.error("❌ Bluetooth connection error:", error)
-    setIsScanning(false)
-    console.log(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
-    setDeviceStatus(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
-    setConnectedDevice(null)
-    cleanupDataSubscription()
-    setIsDataLoading(false)
-    qrLock.current = false // Unlock QR scanning on error
-    if (connectionInterval) {
-      clearInterval(connectionInterval)
-      setConnectionInterval(null)
+      if (!targetDevice) {
+        setDeviceStatus(
+          `Device with address ${macAddress} is not paired. Please pair the device in your Bluetooth settings first.`,
+        )
+        setIsScanning(false)
+        qrLock.current = false // Unlock QR scanning if device not found
+        setCameraActive(true); // Re-enable camera
+        return
+      }
+
+      setDeviceStatus(`Device found: ${targetDevice.name || targetDevice.address}. Connecting...`)
+
+      // Connect to the device
+      const device = await RNBluetoothClassic.connectToDevice(targetDevice.address, {
+        delimiter: "",
+        charset: "utf-8",
+      })
+
+      // Update state
+      setConnectedDevice(device)
+      setIsScanning(false)
+      setDeviceStatus(`Connected to: ${device.name || device.address}`)
+
+      // Clear old data and reset flags for a fresh start
+      setFullDataBuffer([])
+      setIsDataLoading(false)
+      isReceivingData.current = false; // Important: ensure false before starting new read
+      hasProcessedReceipt.current = false;
+      setCameraActive(false); // Camera off during connection and initial data read
+
+      // Start reading data after successful connection
+      await startReadingFromDevice(device)
+      startConnectionCheckInterval(device)
+    } catch (error) {
+      console.error("❌ Bluetooth connection error:", error)
+      setIsScanning(false)
+      console.log(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
+      setDeviceStatus(`Connection error: ${error instanceof Error ? error.message : String(error)}`)
+      setConnectedDevice(null)
+      cleanupDataSubscription()
+      setIsDataLoading(false)
+      qrLock.current = false // Unlock QR scanning on error
+      isReceivingData.current = false; // Reset data receiving flag
+      hasProcessedReceipt.current = false; // Reset processed flag
+      setCameraActive(true); // Re-enable camera on error
+      if (connectionInterval) {
+        clearInterval(connectionInterval)
+        setConnectionInterval(null)
+      }
     }
   }
-}
 
   const normalizeMacAddress = (macAddress: string): string => {
     const cleanMac = macAddress.replace(/[^0-9A-Fa-f]/g, "")
@@ -629,75 +716,83 @@ const Scanner = () => {
     return macAddress
   }
 
-  const handleBarcodeScanned = ({ data }: any) => {
-  // If already locked, receiving data, or loading, don't allow new scans
-  if (qrLock.current || isReceivingData.current || isDataLoading) {
-    console.log("⚠️ Already processing data or locked, ignoring new scan")
-    return
-  }
-  
-  if (data) {
-    // Lock immediately to prevent double scans
-    qrLock.current = true
-    console.log("QR Code scanned, MAC address:", data)
-    
-    const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]?){5}([0-9A-Fa-f]{2})$/
-    if (!macAddressRegex.test(data)) {
-      setDeviceStatus("Invalid MAC address format in QR code")
-      setTimeout(() => {
-        qrLock.current = false
-      }, 3000)
+  const handleBarcodeScanned = async ({ data }: any) => {
+    // If already locked, receiving data, or loading, don't allow new scans
+    if (qrLock.current || isReceivingData.current || isDataLoading) {
+      console.log("⚠️ Already processing data or locked, ignoring new scan")
       return
     }
 
-    setScannedAddress(data)
-    
-    // Show a confirmation dialog before connecting
-    Alert.alert(
-      "Connect to Device",
-      `Do you want to connect to device with address: ${data}?`,
-      [
+    if (data) {
+      // Trigger haptic feedback immediately when QR code is scanned
+      try {
+        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
+        console.log("✅ Haptic feedback triggered")
+      } catch (error) {
+        console.log("⚠️ Haptic feedback failed:", error)
+      }
+
+      // Lock immediately to prevent double scans
+      qrLock.current = true
+      console.log("QR Code scanned, MAC address:", data)
+
+      const macAddressRegex = /^([0-9A-Fa-f]{2}[:-]?){5}([0-9A-Fa-f]{2})$/
+      if (!macAddressRegex.test(data)) {
+        setDeviceStatus("Invalid MAC address format in QR code")
+        setTimeout(() => {
+          qrLock.current = false
+          setCameraActive(true); // Re-enable camera after invalid scan
+        }, 3000)
+        return
+      }
+
+      setScannedAddress(data)
+
+      // Show a confirmation dialog before connecting
+      Alert.alert("Connect to Device", `Do you want to connect to device with address: ${data}?`, [
         {
           text: "Cancel",
           onPress: () => {
             qrLock.current = false
+            setCameraActive(true); // Re-enable camera after cancel
             console.log("🔓 Connection cancelled - QR lock reset")
           },
-          style: "cancel"
+          style: "cancel",
         },
         {
           text: "Connect",
-          onPress: () => connectToDevice(normalizeMacAddress(data))
-        }
-      ]
-    )
+          onPress: () => connectToDevice(normalizeMacAddress(data)),
+        },
+      ])
+    }
   }
-}
 
   // Handle closing the receipt dialog and clearing data
   const handleCloseReceiptDialog = () => {
     setShowReceiptDialog(false)
-    
+
     // Reset states to enable scanning again
     setCameraActive(true)
     qrLock.current = false
-    
+    isReceivingData.current = false; // Ensure this is false
+    hasProcessedReceipt.current = false; // Ensure this is false
+
     // Clear the data
     setFullDataBuffer([])
     setReceiptData(DEFAULT_RECEIPT_DATA)
-    
-    console.log("🧹 Receipt dialog closed - data cleared")
+
+    console.log("🧹 Receipt dialog closed - data cleared, ready for new scan")
   }
 
   // Handle back button press
   const handleBackPress = () => {
     // Clean up and disconnect
     disconnectFromDevice()
-    
+
     // Clear all data before navigating back
     setFullDataBuffer([])
     setReceiptData(DEFAULT_RECEIPT_DATA)
-    
+
     // Navigate back
     router.back()
   }
@@ -761,7 +856,9 @@ const Scanner = () => {
           )}
 
           <View>
-            <Text className="text-white text-center text-sm mt-2">Scanflow</Text>
+            <Text className="text-white text-center text-sm mt-2">
+              {deviceStatus.includes("scan2flow") ? "Scanflow: Command Sent" : deviceStatus}
+            </Text>
           </View>
         </ScrollView>
       </Animated.View>
@@ -770,17 +867,10 @@ const Scanner = () => {
         className="w-[85%] pt-6 flex justify-center m-auto bottom-8"
         entering={FadeInDown.duration(300).delay(200).springify()}
       >
-        <SolidButtonArrowLeft
-          text="Back"
-          onPress={handleBackPress}
-        />
+        <SolidButtonArrowLeft text="Back" onPress={handleBackPress} />
       </Animated.View>
 
-      <ReceiptDialog
-        visible={showReceiptDialog}
-        onDismiss={handleCloseReceiptDialog}
-        receiptData={receiptData}
-      />
+      <ReceiptDialog visible={showReceiptDialog} onDismiss={handleCloseReceiptDialog} receiptData={receiptData} />
     </SafeAreaView>
   )
 }

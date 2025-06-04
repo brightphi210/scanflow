@@ -13,13 +13,29 @@ interface ReceiptDialogProps {
 
 const ReceiptDialog: React.FC<ReceiptDialogProps> = ({ visible, onDismiss, receiptData }) => {
   const [isSaving, setIsSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   
   const handleSaveReceipt = async () => {
     try {
       setIsSaving(true)
+      setSaveError(null)
+      
+      // Validate receipt data before saving
+      if (!receiptData || !receiptData.items || !Array.isArray(receiptData.items)) {
+        throw new Error('Invalid receipt data structure')
+      }
       
       // Save receipt to SQLite database
-      await saveReceipt(receiptData)
+      await saveReceipt({
+        ...receiptData,
+        // Ensure all required fields have default values if missing
+        employee: receiptData.employee || 'Unknown',
+        total: receiptData.total || '#0.00',
+        paymentMethod: receiptData.paymentMethod || 'Cash',
+        paymentAmount: receiptData.paymentAmount || '#0.00',
+        dateTime: receiptData.dateTime || new Date().toLocaleString(),
+        receiptNumber: receiptData.receiptNumber || '0-0000'
+      })
       
       console.log('✅ Receipt saved to SQLite database')
       setIsSaving(false)
@@ -29,6 +45,7 @@ const ReceiptDialog: React.FC<ReceiptDialogProps> = ({ visible, onDismiss, recei
       router.push('/history')
     } catch (error) {
       console.error('❌ Failed to save receipt to database:', error)
+      setSaveError(`Failed to save: ${error instanceof Error ? error.message : 'Unknown error'}`)
       setIsSaving(false)
     }
   }
@@ -90,6 +107,13 @@ const ReceiptDialog: React.FC<ReceiptDialogProps> = ({ visible, onDismiss, recei
               <Text style={{fontFamily: 'Poppins_400Regular'}} className="text-white text-base">{receiptData.paymentAmount}</Text>
             </View>
           </View>
+
+          {/* Error message */}
+          {saveError && (
+            <View className="mt-4 bg-red-900/50 p-3 rounded-lg">
+              <Text style={{fontFamily: 'Poppins_400Regular'}} className="text-red-300 text-sm">{saveError}</Text>
+            </View>
+          )}
 
           {/* Buttons */}
           <View className="mt-6 flex flex-row justify-between">
