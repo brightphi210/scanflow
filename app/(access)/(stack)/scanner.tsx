@@ -770,14 +770,10 @@ const Scanner = () => {
   // Handle closing the receipt dialog and clearing data
   const handleCloseReceiptDialog = () => {
     setShowReceiptDialog(false)
-
-    // Reset states to enable scanning again
     setCameraActive(true)
     qrLock.current = false
     isReceivingData.current = false; // Ensure this is false
     hasProcessedReceipt.current = false; // Ensure this is false
-
-    // Clear the data
     setFullDataBuffer([])
     setReceiptData(DEFAULT_RECEIPT_DATA)
 
@@ -786,14 +782,9 @@ const Scanner = () => {
 
   // Handle back button press
   const handleBackPress = () => {
-    // Clean up and disconnect
     disconnectFromDevice()
-
-    // Clear all data before navigating back
     setFullDataBuffer([])
     setReceiptData(DEFAULT_RECEIPT_DATA)
-
-    // Navigate back
     router.back()
   }
 
